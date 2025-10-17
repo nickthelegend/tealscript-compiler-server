@@ -7,7 +7,7 @@ import { spawn } from "child_process";
 import { v4 as uuidv4 } from "uuid";
 
 const PORT = Number(process.env.PORT || 3000);
-const TEALSCRIPT_CLI = "tealscript";
+const TEALSCRIPT_CLI = "npx";
 const DEFAULT_TIMEOUT_MS = Number(process.env.TEALSCRIPT_TIMEOUT_MS || 20000);
 const BODY_LIMIT = process.env.BODY_LIMIT || "2mb";
 
@@ -94,37 +94,6 @@ function readAllFilesRecursively(dir) {
   return out;
 }
 
-function tryRecoverCodeFromString(raw) {
-  if (!raw || typeof raw !== "string") return null;
-
-  const firstBrace = raw.indexOf("{");
-  const trimmed = firstBrace >= 0 ? raw.slice(firstBrace) : raw;
-
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed === "object" && typeof parsed.code === "string") return { filename: parsed.filename, code: parsed.code };
-  } catch (e) {
-    // continue
-  }
-
-  const codeRegex = /"code"\s*:\s*"([\s\S]*?)"\s*(?:,|\})/m;
-  const m = trimmed.match(codeRegex);
-  if (m && m[1] !== undefined) {
-    let captured = m[1];
-    try {
-      const safe = `"${captured.replace(/\\?"/g, '\\"').replace(/\n/g, "\\n")}"`;
-      captured = JSON.parse(safe);
-    } catch (ee) {
-      captured = captured.replace(/\\r\\n/g, "\r\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
-    }
-    const fnMatch = trimmed.match(/"filename"\s*:\s*"([^"]+)"/m);
-    const filename = fnMatch ? fnMatch[1] : undefined;
-    return { filename, code: captured };
-  }
-
-  return null;
-}
-
 app.post("/compile", async (req, res) => {
   let tmpRoot;
   try {
@@ -148,35 +117,83 @@ app.post("/compile", async (req, res) => {
 
     // Use /tmp for file operations
     tmpRoot = fs.mkdtempSync(path.join("/tmp", `tealscript-${id}-`));
-    const srcPath = path.join(tmpRoot, safeFilename);
-    const outDir = path.join(tmpRoot, "out");
+    const srcDir = path.join(tmpRoot, "src");
+    const srcPath = path.join(srcDir, safeFilename);
+    const outDir = path.join(tmpRoot, "artifacts");
+    
+    fs.mkdirSync(srcDir, { recursive: true });
 
     console.log("writing to:", srcPath);
-    fs.writeFileSync(srcPath, sourceCode, "utf8");
     fs.mkdirSync(outDir, { recursive: true });
     
-    // Copy simple.algo.ts from project root
-    const projectRoot = "/workspaces/tealscript-compiler-server";
-    const simpleAlgoPath = path.join(projectRoot, "simple.algo.ts");
-    if (fs.existsSync(simpleAlgoPath)) {
-      const targetPath = path.join(tmpRoot, "simple.algo.ts");
-      fs.copyFileSync(simpleAlgoPath, targetPath);
+    // Copy pre-seeded template from /tmp/tealscript-template
+    const templateDir = "/tmp/tealscript-template";
+    if (fs.existsSync(templateDir)) {
+      const templatePkg = path.join(templateDir, "package.json");
+      const templateTsconfig = path.join(templateDir, "tsconfig.json");
+      const templateNodeModules = path.join(templateDir, "node_modules");
+      
+      if (fs.existsSync(templatePkg)) {
+        fs.copyFileSync(templatePkg, path.join(tmpRoot, "package.json"));
+      }
+      if (fs.existsSync(templateTsconfig)) {
+        fs.copyFileSync(templateTsconfig, path.join(tmpRoot, "tsconfig.json"));
+      }
+      if (fs.existsSync(templateNodeModules)) {
+        fs.cpSync(templateNodeModules, path.join(tmpRoot, "node_modules"), { recursive: true });
+      }
     }
+    
+    // Write the source code after setting up the environment
+    fs.writeFileSync(srcPath, sourceCode, "utf8");
+    
+    // Ensure tsconfig.json exists in temp directory
+    const tsconfigPath = path.join(tmpRoot, "tsconfig.json");
+    if (!fs.existsSync(tsconfigPath)) {
+      const projectTsconfig = "/app/tsconfig.json";
+      if (fs.existsSync(projectTsconfig)) {
+        fs.copyFileSync(projectTsconfig, tsconfigPath);
+      }
+    }
+    
+    // Debug: Comprehensive debugging
+    console.log("Template dir exists:", fs.existsSync(templateDir));
+    console.log("Files in temp directory:", fs.readdirSync(tmpRoot));
+    console.log("tsconfig.json exists in temp:", fs.existsSync(tsconfigPath));
+    console.log("/app/tsconfig.json exists:", fs.existsSync("/app/tsconfig.json"));
+    
+    // Create tsconfig.json in nested temp directory that TealScript creates
+    const nestedTmpDir = path.join(tmpRoot, "tmp", path.basename(tmpRoot));
+    fs.mkdirSync(nestedTmpDir, { recursive: true });
+    const nestedTsconfigPath = path.join(nestedTmpDir, "tsconfig.json");
+    if (fs.existsSync(tsconfigPath)) {
+      fs.copyFileSync(tsconfigPath, nestedTsconfigPath);
+    }
+    console.log("Created nested tsconfig at:", nestedTsconfigPath);
+    console.log("Nested tsconfig exists:", fs.existsSync(nestedTsconfigPath));
 
     const args = [
-      "compile",
-      path.join(tmpRoot, "simple.algo.ts"),
-      "--outDir", outDir
+      "@algorandfoundation/tealscript",
+      "src/*.algo.ts",
+      "artifacts"
     ];
 
     console.log("running:", TEALSCRIPT_CLI, args.join(" "));
     const result = await runCommand(TEALSCRIPT_CLI, args, { cwd: tmpRoot, env: process.env });
+    console.log("TealScript stdout:", result.stdout);
+    console.log("TealScript stderr:", result.stderr);
 
     // Read all generated files from output directory
     const allArtifacts = readAllFilesRecursively(outDir);
+    console.log("Generated files:", Object.keys(allArtifacts));
     
-    // Return all generated files (TEAL, ARC32, ARC56)
-    const artifacts = allArtifacts;
+    // Filter only .arc32.json and .arc4.json files
+    const artifacts = {};
+    for (const [filename, content] of Object.entries(allArtifacts)) {
+      if (filename.endsWith('.arc32.json') || filename.endsWith('.arc4.json')) {
+        artifacts[filename] = content;
+      }
+    }
     
     // Cleanup temp directory
     try {
@@ -186,10 +203,10 @@ app.post("/compile", async (req, res) => {
     }
 
     if (Object.keys(artifacts).length === 0) {
-      return res.status(500).json({ ok: false, error: "No files produced by TealScript compiler" });
+      return res.status(500).json({ ok: false, error: "No .arc32.json or .arc4.json files produced" });
     }
 
-    // Return all generated files
+    // Return only .arc32.json and .arc4.json files
     return res.json({ ok: true, files: artifacts });
   } catch (err) {
     console.error("compile error:", err);

@@ -13,6 +13,7 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "strict": false,
+    "experimentalDecorators": true,
     "types": ["node"],
     "typeRoots": [
       "./node_modules/@types",
