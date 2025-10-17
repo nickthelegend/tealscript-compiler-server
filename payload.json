@@ -1,0 +1,4 @@
+{
+  "filename": "contract.algo.ts",
+  "code": "import { Contract } from '@algorandfoundation/tealscript'\n\nexport default class Simple extends Contract {\n  counter = GlobalStateKey<uint64>({ key: 'counter' });\n\n  private incrementCounter(i: uint64): void {\n    this.counter.value = this.counter.value + i;\n  }\n\n  incr(i: uint64): void {\n    this.incrementCounter(i);\n  }\n\n  decr(i: uint64): void {\n    this.counter.value = this.counter.value - i;\n  }\n\n  add(a: uint256, b: uint256): uint256 {\n    return a + b;\n  }\n\n  sub(a: uint256, b: uint256): uint256 {\n    return a - b;\n  }\n\n  clearState(): void {\n    this.incrementCounter(1);\n  }\n}"
+}
