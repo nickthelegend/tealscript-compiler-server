@@ -236,6 +236,85 @@ app.post("/compile", async (req, res) => {
   }
 });
 
+app.post("/generate-client", async (req, res) => {
+  let tmpRoot;
+  try {
+    let arc32Data;
+    
+    // Handle payload from request body with base64 support
+    if (req.body && typeof req.body === "object") {
+      if (req.body.arc32JsonBase64) {
+        // Decode base64 ARC32 JSON
+        try {
+          const decoded = Buffer.from(req.body.arc32JsonBase64, 'base64').toString('utf8');
+          arc32Data = JSON.parse(decoded);
+        } catch (err) {
+          return res.status(400).json({ ok: false, error: "Invalid base64 encoding or JSON in arc32JsonBase64 field" });
+        }
+      } else if (req.body.arc32Json) {
+        arc32Data = req.body.arc32Json;
+      } else {
+        return res.status(400).json({ ok: false, error: "Invalid request body. Expected JSON with { arc32Json } or { arc32JsonBase64 }." });
+      }
+    } else {
+      return res.status(400).json({ ok: false, error: "Invalid request body. Expected JSON with { arc32Json } or { arc32JsonBase64 }." });
+    }
+
+    const id = uuidv4();
+
+    // Create temporary directory
+    tmpRoot = fs.mkdtempSync(path.join("/tmp", `algokit-${id}-`));
+    const arc32Path = path.join(tmpRoot, "contract.arc32.json");
+    const clientPath = path.join(tmpRoot, "client.ts");
+
+    // Write ARC32 JSON to file
+    const arc32Content = typeof arc32Data === "string" ? arc32Data : JSON.stringify(arc32Data, null, 2);
+    fs.writeFileSync(arc32Path, arc32Content, "utf8");
+    console.log("ARC32 written to:", arc32Path);
+
+    // Run algokit generate client command
+    const args = ["generate", "client", arc32Path, "--output", clientPath];
+    console.log("running: algokit", args.join(" "));
+    
+    await runCommand("algokit", args, { cwd: tmpRoot });
+
+    // Read generated client.ts file
+    if (!fs.existsSync(clientPath)) {
+      throw new Error("client.ts file was not generated");
+    }
+
+    const clientContent = fs.readFileSync(clientPath, "utf8");
+    
+    // Cleanup temp directory
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.warn("Cleanup warning:", cleanupErr.message);
+    }
+
+    return res.json({ 
+      ok: true, 
+      files: {
+        "client.ts": {
+          encoding: "base64",
+          data: Buffer.from(clientContent, 'utf8').toString('base64')
+        }
+      }
+    });
+  } catch (err) {
+    console.error("generate-client error:", err);
+    // Cleanup on error
+    if (tmpRoot) {
+      try {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        console.warn("Error cleanup warning:", cleanupErr.message);
+      }
+    }
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Compiler server running on port ${PORT}`);
 });

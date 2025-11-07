@@ -11,11 +11,12 @@ WORKDIR /app
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get install -y curl ca-certificates && \
+    apt-get install -y curl ca-certificates python3 python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
-# Install tealscript globally
+# Install tealscript and algokit globally
 RUN npm install -g @algorandfoundation/tealscript
+RUN pip3 install --break-system-packages algokit
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
