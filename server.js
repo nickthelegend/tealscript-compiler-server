@@ -103,7 +103,16 @@ app.post("/compile", async (req, res) => {
     // Handle payload from request body
     if (req.body && typeof req.body === "object" && typeof req.body.code === "string") {
       filename = req.body.filename || filename;
-      sourceCode = req.body.code;
+      // Decode base64 if provided
+      if (req.body.encoded === "base64") {
+        try {
+          sourceCode = Buffer.from(req.body.code, 'base64').toString('utf8');
+        } catch (err) {
+          return res.status(400).json({ ok: false, error: "Invalid base64 encoding" });
+        }
+      } else {
+        sourceCode = req.body.code;
+      }
     } else {
       return res.status(400).json({ ok: false, error: "Invalid request body. Expected JSON with { filename, code }." });
     }
@@ -187,11 +196,11 @@ app.post("/compile", async (req, res) => {
     const allArtifacts = readAllFilesRecursively(outDir);
     console.log("Generated files:", Object.keys(allArtifacts));
     
-    // Filter only .arc32.json and .arc4.json files
+    // Filter only .arc32.json and .arc4.json files and return as plaintext
     const artifacts = {};
     for (const [filename, content] of Object.entries(allArtifacts)) {
       if (filename.endsWith('.arc32.json') || filename.endsWith('.arc4.json')) {
-        artifacts[filename] = content;
+        artifacts[filename] = content.data; // Return just the data as plaintext
       }
     }
     
@@ -206,8 +215,13 @@ app.post("/compile", async (req, res) => {
       return res.status(500).json({ ok: false, error: "No .arc32.json or .arc4.json files produced" });
     }
 
-    // Return only .arc32.json and .arc4.json files
-    return res.json({ ok: true, files: artifacts });
+    // Return plaintext response
+    const response = Object.entries(artifacts).map(([filename, data]) => 
+      `=== ${filename} ===\n${data}\n`
+    ).join('\n');
+    
+    res.setHeader('Content-Type', 'text/plain');
+    return res.send(response);
   } catch (err) {
     console.error("compile error:", err);
     // Cleanup on error
